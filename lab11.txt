@@ -1,0 +1,182 @@
+# =====================================================
+# Android Malware Detection Lab - FINAL Version
+# =====================================================
+
+# 1. Import Libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+
+import warnings
+warnings.filterwarnings('ignore')
+
+# 2. Load Dataset
+file_path = 'drebin-215-dataset-5560malware-9476-benign.csv'
+df = pd.read_csv(file_path)
+
+print("Dataset Shape:", df.shape)
+print(df.head())
+
+# 3. Check columns
+print("\nColumns:", df.columns.tolist())
+
+# Automatically detect the label/target column
+possible_label_cols = ['class', 'label', 'malware', 'target']
+label_col = None
+
+for col in df.columns:
+    if col.lower() in possible_label_cols:
+        label_col = col
+        break
+
+if label_col is None:
+    raise Exception("ERROR: No label column found!")
+
+print(f"\nDetected Label Column: {label_col}")
+
+# 4. Data Cleaning
+# Replace '?' with NaN and handle missing values
+df.replace('?', np.nan, inplace=True)
+
+# Check missing values
+print("\nMissing Values per column:\n", df.isnull().sum())
+
+# Drop columns with too many missing values (if any)
+missing_threshold = 0.5  # Drop columns with >50% missing
+df = df.dropna(axis=1, thresh=int((1-missing_threshold)*len(df)))
+
+# Fill remaining missing values with mode (most frequent value)
+df.fillna(df.mode().iloc[0], inplace=True)
+
+print("\nShape after cleaning:", df.shape)
+
+# Encode the label column
+label_encoder = LabelEncoder()
+df[label_col] = label_encoder.fit_transform(df[label_col])
+
+# Separate features and target
+X = df.drop(label_col, axis=1)
+y = df[label_col]
+
+# Check if any feature columns are still non-numeric
+non_numeric_cols = X.select_dtypes(include=['object']).columns
+if len(non_numeric_cols) > 0:
+    print("\nEncoding non-numeric feature columns:", non_numeric_cols.tolist())
+    X = pd.get_dummies(X, columns=non_numeric_cols)
+
+# 5. Feature Scaling
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# 6. Train-test Split
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# 7. Model Development
+models = {
+    "Logistic Regression": LogisticRegression(),
+    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+}
+
+results = {}
+
+for name, model in models.items():
+    print(f"\nTraining {name}...")
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred)
+    rec = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
+    
+    results[name] = {
+        "Model": model,
+        "Accuracy": acc,
+        "Precision": prec,
+        "Recall": rec,
+        "F1 Score": f1,
+        "Confusion Matrix": cm
+    }
+    
+    print(f"\nClassification Report for {name}:\n")
+    print(classification_report(y_test, y_pred))
+
+# 8. Hyperparameter Tuning (XGBoost)
+print("\n\n=== Hyperparameter Tuning: XGBoost ===\n")
+
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+
+param_grid = {
+    'max_depth': [3, 5, 7],
+    'learning_rate': [0.01, 0.1, 0.2],
+    'n_estimators': [100, 200]
+}
+
+grid_search = GridSearchCV(xgb, param_grid, cv=3, scoring='accuracy', verbose=1, n_jobs=-1)
+grid_search.fit(X_train, y_train)
+
+print("\nBest Hyperparameters:", grid_search.best_params_)
+
+# Retrain best XGBoost model
+best_xgb = grid_search.best_estimator_
+y_pred_best = best_xgb.predict(X_test)
+
+# Evaluate
+acc_best = accuracy_score(y_test, y_pred_best)
+prec_best = precision_score(y_test, y_pred_best)
+rec_best = recall_score(y_test, y_pred_best)
+f1_best = f1_score(y_test, y_pred_best)
+cm_best = confusion_matrix(y_test, y_pred_best)
+
+results["XGBoost (Tuned)"] = {
+    "Model": best_xgb,
+    "Accuracy": acc_best,
+    "Precision": prec_best,
+    "Recall": rec_best,
+    "F1 Score": f1_best,
+    "Confusion Matrix": cm_best
+}
+
+print("\nClassification Report for XGBoost (Tuned):\n")
+print(classification_report(y_test, y_pred_best))
+
+# 9. Final Model Comparison
+comparison_df = pd.DataFrame({
+    model_name: {
+        "Accuracy": metrics["Accuracy"],
+        "Precision": metrics["Precision"],
+        "Recall": metrics["Recall"],
+        "F1 Score": metrics["F1 Score"]
+    } for model_name, metrics in results.items()
+}).T
+
+print("\n\n=== Final Model Performance Comparison ===\n")
+print(comparison_df)
+
+# 10. Plot Confusion Matrices
+fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+
+for ax, (model_name, metrics) in zip(axes.flatten(), results.items()):
+    sns.heatmap(metrics['Confusion Matrix'], annot=True, fmt='d', cmap='Blues', ax=ax)
+    ax.set_title(f'{model_name} Confusion Matrix', fontsize=14)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Actual')
+
+plt.tight_layout()
+plt.show()
+
+# =====================================================
+# END OF SCRIPT
+# =====================================================
